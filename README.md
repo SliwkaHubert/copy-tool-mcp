@@ -8,6 +8,7 @@ This is a Model Context Protocol (MCP) server that allows you to connect to Goog
 - Update existing documents
 - Search for documents
 - Delete documents
+- formatting tables
 
 ## Prerequisites
 
