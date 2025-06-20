@@ -557,3 +557,374 @@ main().catch((error) => {
   console.error("Fatal error in main():", error);
   process.exit(1);
 });
+// Poprawione narzędzia do obsługi tabel w Google Docs MCP Server
+
+// Tool do tworzenia tabeli w dokumencie (poprawiona wersja)
+server.tool(
+  "insert-table",
+  {
+    docId: z.string().describe("The ID of the document to insert table into"),
+    rows: z.number().describe("Number of rows in the table"),
+    columns: z.number().describe("Number of columns in the table"),
+    insertIndex: z.number().optional().describe("Index where to insert the table (default: end of document)"),
+    tableData: z.array(z.array(z.string())).optional().describe("2D array of table data [row][column]"),
+  },
+  async ({ docId, rows, columns, insertIndex, tableData }) => {
+    try {
+      const documentId = docId.toString();
+      
+      // Pobierz dokument, aby poprawnie obliczyć indeks
+      const doc = await docsClient.documents.get({ documentId });
+      
+      let targetIndex = insertIndex;
+      if (!targetIndex) {
+        // Oblicz poprawny indeks końca dokumentu
+        targetIndex = 1;
+        if (doc.data.body && doc.data.body.content) {
+          for (const element of doc.data.body.content) {
+            if (element.endIndex) {
+              targetIndex = Math.max(targetIndex, element.endIndex);
+            }
+          }
+        }
+        // Wstaw przed ostatnim znakiem dokumentu (zwykle jest to znak końca paragrafu)
+        targetIndex = Math.max(1, targetIndex - 1);
+      }
+
+      console.error(`Inserting table at index: ${targetIndex}`);
+
+      // Wstaw tabelę
+      const result = await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: {
+          requests: [{
+            insertTable: {
+              rows: rows,
+              columns: columns,
+              location: {
+                index: targetIndex,
+              },
+            },
+          }],
+        },
+      });
+
+      console.error("Table inserted successfully:", result.data);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Table created successfully!\nRows: ${rows}\nColumns: ${columns}\nDocument ID: ${docId}\nInserted at index: ${targetIndex}`,
+          },
+        ],
+      };
+    } catch (error) {
+      console.error("Error creating table:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating table: ${error.message || error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool do aktualizacji konkretnej komórki tabeli (poprawiona wersja)
+server.tool(
+  "update-table-cell",
+  {
+    docId: z.string().describe("The ID of the document containing the table"),
+    tableIndex: z.number().describe("Index of the table in the document (0-based)"),
+    row: z.number().describe("Row index (0-based)"),
+    column: z.number().describe("Column index (0-based)"),
+    text: z.string().describe("Text to insert in the cell"),
+    replaceContent: z.boolean().optional().describe("Whether to replace existing content (true) or append (false)"),
+  },
+  async ({ docId, tableIndex, row, column, text, replaceContent = true }) => {
+    try {
+      const documentId = docId.toString();
+      
+      // Pobierz dokument, aby znaleźć tabelę
+      const doc = await docsClient.documents.get({ documentId });
+      
+      // Znajdź tabelę w dokumencie
+      let currentTableIndex = 0;
+      let targetTable: any = null;
+      
+      if (doc.data.body && doc.data.body.content) {
+        for (const element of doc.data.body.content) {
+          if (element.table) {
+            if (currentTableIndex === tableIndex) {
+              targetTable = element.table;
+              break;
+            }
+            currentTableIndex++;
+          }
+        }
+      }
+      
+      if (!targetTable) {
+        throw new Error(`Table with index ${tableIndex} not found in document`);
+      }
+      
+      // Sprawdź, czy komórka istnieje
+      if (!targetTable.tableRows || !targetTable.tableRows[row]) {
+        throw new Error(`Row ${row} not found in table`);
+      }
+      
+      if (!targetTable.tableRows[row].tableCells || !targetTable.tableRows[row].tableCells[column]) {
+        throw new Error(`Column ${column} not found in row ${row}`);
+      }
+      
+      const cell = targetTable.tableRows[row].tableCells[column];
+      
+      // Znajdź indeks początku i końca komórki
+      let cellStartIndex = cell.startIndex;
+      let cellEndIndex = cell.endIndex;
+      
+      console.error(`Cell indices: start=${cellStartIndex}, end=${cellEndIndex}`);
+      
+      const requests: any[] = [];
+      
+      if (replaceContent) {
+        // Usuń istniejącą zawartość komórki, ale zostaw znak końca komórki
+        if (cellEndIndex - cellStartIndex > 1) {
+          requests.push({
+            deleteContentRange: {
+              range: {
+                startIndex: cellStartIndex,
+                endIndex: cellEndIndex - 1,
+              },
+            },
+          });
+        }
+        
+        // Wstaw nowy tekst na początku komórki
+        requests.push({
+          insertText: {
+            location: {
+              index: cellStartIndex,
+            },
+            text: text,
+          },
+        });
+      } else {
+        // Dodaj tekst przed znakiem końca komórki
+        requests.push({
+          insertText: {
+            location: {
+              index: cellEndIndex - 1,
+            },
+            text: text,
+          },
+        });
+      }
+      
+      await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: { requests },
+      });
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Table cell updated successfully!\nTable: ${tableIndex}\nRow: ${row}\nColumn: ${column}\nText: "${text}"`,
+          },
+        ],
+      };
+    } catch (error) {
+      console.error("Error updating table cell:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating table cell: ${error.message || error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Nowy tool - prostsze podejście do tworzenia tabeli z danymi
+server.tool(
+  "create-formatted-table",
+  {
+    docId: z.string().describe("The ID of the document to insert table into"),
+    headers: z.array(z.string()).describe("Array of column headers"),
+    data: z.array(z.array(z.string())).describe("2D array of table data [row][column]"),
+    insertIndex: z.number().optional().describe("Index where to insert the table (default: end of document)"),
+    headerStyle: z.boolean().optional().describe("Whether to make the first row bold (header style)"),
+  },
+  async ({ docId, headers, data, insertIndex, headerStyle = true }) => {
+    try {
+      const documentId = docId.toString();
+      const columns = headers.length;
+      const rows = data.length + 1; // +1 for headers
+      
+      // Najpierw utwórz pustą tabelę
+      const doc = await docsClient.documents.get({ documentId });
+      
+      let targetIndex = insertIndex;
+      if (!targetIndex) {
+        targetIndex = 1;
+        if (doc.data.body && doc.data.body.content) {
+          for (const element of doc.data.body.content) {
+            if (element.endIndex) {
+              targetIndex = Math.max(targetIndex, element.endIndex);
+            }
+          }
+        }
+        targetIndex = Math.max(1, targetIndex - 1);
+      }
+
+      console.error(`Creating formatted table at index: ${targetIndex}`);
+
+      // 1. Wstaw pustą tabelę
+      await docsClient.documents.batchUpdate({
+        documentId,
+        requestBody: {
+          requests: [{
+            insertTable: {
+              rows: rows,
+              columns: columns,
+              location: {
+                index: targetIndex,
+              },
+            },
+          }],
+        },
+      });
+
+      // 2. Poczekaj chwilę i pobierz zaktualizowany dokument
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const updatedDoc = await docsClient.documents.get({ documentId });
+      
+      // 3. Znajdź nowo utworzoną tabelę
+      let newTable: any = null;
+      if (updatedDoc.data.body && updatedDoc.data.body.content) {
+        for (const element of updatedDoc.data.body.content) {
+          if (element.table && element.startIndex && element.startIndex >= targetIndex) {
+            newTable = element.table;
+            break;
+          }
+        }
+      }
+      
+      if (!newTable) {
+        throw new Error("Could not find the newly created table");
+      }
+
+      console.error("Found new table with", newTable.tableRows?.length, "rows");
+
+      // 4. Wypełnij nagłówki
+      const fillRequests: any[] = [];
+      
+      // Wypełnij nagłówki (pierwszy wiersz)
+      if (newTable.tableRows && newTable.tableRows[0] && newTable.tableRows[0].tableCells) {
+        for (let colIndex = 0; colIndex < headers.length && colIndex < newTable.tableRows[0].tableCells.length; colIndex++) {
+          const headerText = headers[colIndex];
+          const cell = newTable.tableRows[0].tableCells[colIndex];
+          
+          if (headerText && cell && cell.startIndex !== undefined) {
+            fillRequests.push({
+              insertText: {
+                location: {
+                  index: cell.startIndex,
+                },
+                text: headerText,
+              },
+            });
+            
+            // Pogrub nagłówek jeśli headerStyle = true
+            if (headerStyle) {
+              fillRequests.push({
+                updateTextStyle: {
+                  range: {
+                    startIndex: cell.startIndex,
+                    endIndex: cell.startIndex + headerText.length,
+                  },
+                  textStyle: {
+                    bold: true,
+                  },
+                  fields: "bold",
+                },
+              });
+            }
+          }
+        }
+      }
+      
+      // Wypełnij dane (pozostałe wiersze)
+      for (let rowIndex = 0; rowIndex < data.length && (rowIndex + 1) < newTable.tableRows.length; rowIndex++) {
+        const rowData = data[rowIndex];
+        const tableRow = newTable.tableRows[rowIndex + 1]; // +1 bo pierwszy wiersz to nagłówki
+        
+        if (tableRow && tableRow.tableCells) {
+          for (let colIndex = 0; colIndex < rowData.length && colIndex < tableRow.tableCells.length; colIndex++) {
+            const cellText = rowData[colIndex];
+            const cell = tableRow.tableCells[colIndex];
+            
+            if (cellText && cell && cell.startIndex !== undefined) {
+              fillRequests.push({
+                insertText: {
+                  location: {
+                    index: cell.startIndex,
+                  },
+                  text: cellText,
+                },
+              });
+            }
+          }
+        }
+      }
+
+      // 5. Wykonaj wszystkie operacje wypełniania
+      if (fillRequests.length > 0) {
+        console.error(`Executing ${fillRequests.length} fill requests`);
+        
+        // Wykonuj requests w mniejszych partiach, aby uniknąć przekroczenia limitów
+        const batchSize = 10;
+        for (let i = 0; i < fillRequests.length; i += batchSize) {
+          const batch = fillRequests.slice(i, i + batchSize);
+          await docsClient.documents.batchUpdate({
+            documentId,
+            requestBody: { requests: batch },
+          });
+          
+          // Krótka pauza między partiami
+          if (i + batchSize < fillRequests.length) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Formatted table created successfully!\nRows: ${rows} (including header)\nColumns: ${columns}\nDocument ID: ${docId}\nFilled ${fillRequests.length} cells`,
+          },
+        ],
+      };
+    } catch (error) {
+      console.error("Error creating formatted table:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating formatted table: ${error.message || error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
