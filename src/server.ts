@@ -19,14 +19,30 @@ const SCOPES = [
 // Resolve paths relative to the project root
 const PROJECT_ROOT = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), '..'));
 
-// Dodaj po definicji TOKEN_PATH
-const SURFER_API_KEY = path.join(PROJECT_ROOT, "surfer-config.json");
-
 // The token path is where we'll store the OAuth credentials
 const TOKEN_PATH = path.join(PROJECT_ROOT, "token.json");
 
 // The credentials path is where your OAuth client credentials are stored
 const CREDENTIALS_PATH = path.join(PROJECT_ROOT, "credentials.json");
+
+// Dodaj funkcję do odczytywania klucza API (wstaw po definicji CREDENTIALS_PATH)
+const SURFER_CONFIG_PATH = path.join(PROJECT_ROOT, "surfer-config.json");
+
+// Funkcja do odczytywania klucza API Surfer SEO
+function getSurferApiKey(): string {
+  try {
+    if (fs.existsSync(SURFER_CONFIG_PATH)) {
+      const config = JSON.parse(fs.readFileSync(SURFER_CONFIG_PATH, "utf-8"));
+      console.error("🔑 API Key loaded:", config.api_key);
+      return config.api_key;
+    } else {
+      throw new Error(`Surfer config file not found at: ${SURFER_CONFIG_PATH}`);
+    }
+  } catch (error) {
+    console.error("Error reading Surfer API key:", error);
+    throw new Error("Could not read Surfer SEO API key. Please create surfer-config.json file with your API key.");
+  }
+}
 
 // Create an MCP server instance
 const server = new McpServer({
@@ -216,7 +232,7 @@ server.resource(
 
 // TOOLS
 
-// Tool do pobierania słów kluczowych z Surfer SEO
+// get-surfer-keywords
 server.tool(
   "get-surfer-keywords",
   {
@@ -224,10 +240,12 @@ server.tool(
   },
   async ({ contentEditorId }) => {
     try {
+      const apiKey = getSurferApiKey();
+      
       // Wywołanie API Surfer SEO
       const response = await fetch(`https://app.surferseo.com/api/v1/content_editors/${contentEditorId}/terms`, {
         headers: {
-          "API-KEY": SURFER_API_KEY,
+          "API-KEY": apiKey,
           "Content-Type": "application/json",
           "Accept": "application/json"
         }
@@ -277,6 +295,195 @@ server.tool(
 
     } catch (error) {
       console.error("Błąd podczas pobierania słów kluczowych:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Błąd: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Narzędzie do listowania Content Editors
+server.tool(
+  "list-content-editors",
+  {
+    from: z.string().optional().describe("ISO8601 timestamp - returns only drafts created after this time (e.g. 2023-01-01T00:00:00Z)"),
+    to: z.string().optional().describe("ISO8601 timestamp - returns only drafts created before this time (e.g. 2023-12-31T23:59:59Z)"),
+    page: z.number().optional().describe("Page number (default: 1)"),
+    pageSize: z.number().optional().describe("Number of items per page (1-100, default: 25)"),
+  },
+  async ({ from, to, page = 1, pageSize = 25 }) => {
+    try {
+      const apiKey = getSurferApiKey();
+      
+      // Przygotuj URL z parametrami
+      const url = new URL("https://app.surferseo.com/api/v1/content_editors");
+      
+      if (from) url.searchParams.append("from", from);
+      if (to) url.searchParams.append("to", to);
+      url.searchParams.append("page", page.toString());
+      url.searchParams.append("page_size", pageSize.toString());
+
+      // Wywołanie API Surfer SEO
+      const response = await fetch(url.toString(), {
+        headers: {
+          "API-KEY": apiKey,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        }
+      });
+
+      // Sprawdź czy request się udał
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+      }
+
+      const data = await response.json() as any;
+
+      // Przygotuj czytelną odpowiedź
+      let result = `📋 Lista Content Editors\n\n`;
+      
+      if (data.data && data.data.length > 0) {
+        result += `Znaleziono ${data.data.length} editorów (strona ${page}):\n\n`;
+        
+        data.data.forEach((editor: any) => {
+          result += `🎯 ID: ${editor.id}\n`;
+          result += `   Nazwa: ${editor.title || 'Bez nazwy'}\n`;
+          result += `   Status: ${editor.status || 'Nieznany'}\n`;
+          result += `   Utworzony: ${editor.created_at || 'Nieznana data'}\n`;
+          if (editor.keyword) {
+            result += `   Słowo kluczowe: ${editor.keyword}\n`;
+          }
+          result += `\n`;
+        });
+        
+        // Dodaj informacje o paginacji jeśli dostępne
+        if (data.meta) {
+          result += `📊 Paginacja:\n`;
+          result += `   Strona: ${data.meta.current_page || page}\n`;
+          result += `   Łącznie stron: ${data.meta.last_page || 'Nieznane'}\n`;
+          result += `   Łącznie elementów: ${data.meta.total || 'Nieznane'}\n`;
+        }
+      } else {
+        result += `Nie znaleziono żadnych Content Editors.`;
+        if (from || to) {
+          result += `\nSprawdź czy daty są poprawne (${from || 'brak'} - ${to || 'brak'}).`;
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+
+    } catch (error) {
+      console.error("Błąd podczas pobierania listy Content Editors:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Błąd: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Narzędzie do aktualizacji Content Editora w Surfer SEO
+server.tool(
+  "update-content-editor",
+  {
+    contentEditorId: z.number().describe("ID of the Surfer SEO Content Editor to update"),
+    content: z.string().optional().describe("New HTML content to replace existing content"),
+    includedTerms: z.array(z.string()).optional().describe("Array of terms to be used in this Editor"),
+  },
+  async ({ contentEditorId, content, includedTerms }) => {
+    try {
+      const apiKey = getSurferApiKey();
+      
+      // Przygotuj dane do wysłania
+      const requestBody: any = {};
+      
+      if (content) {
+        requestBody.content = content;
+      }
+      
+      if (includedTerms) {
+        requestBody.included_terms = includedTerms;
+      }
+      
+      // Sprawdź czy mamy coś do wysłania
+      if (!content && !includedTerms) {
+        throw new Error("Musisz podać przynajmniej 'content' lub 'includedTerms' do aktualizacji");
+      }
+
+      // Wywołanie API Surfer SEO
+      const response = await fetch(`https://app.surferseo.com/api/v1/content_editors/${contentEditorId}`, {
+        method: 'PATCH',
+        headers: {
+          "API-KEY": apiKey,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      // Sprawdź czy request się udał
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error("Content Editor nie został znaleziony (404)");
+        } else if (response.status === 409) {
+          throw new Error("Content Editor nie jest w stanie 'completed' (409)");
+        } else if (response.status === 429) {
+          throw new Error("Przekroczono limit zapytań (429) - poczekaj chwilę");
+        } else {
+          throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+        }
+      }
+
+      // Przygotuj czytelną odpowiedź
+      let result = `✅ Content Editor zaktualizowany pomyślnie!\n\n`;
+      result += `🎯 ID: ${contentEditorId}\n`;
+      
+      if (content) {
+        result += `📝 Zaktualizowana treść: ${content.length} znaków\n`;
+      }
+      
+      if (includedTerms && includedTerms.length > 0) {
+        result += `🔑 Zaktualizowane słowa kluczowe (${includedTerms.length}):\n`;
+        includedTerms.forEach(term => {
+          result += `   • ${term}\n`;
+        });
+      }
+      
+      result += `\n💡 Content Score zostanie przeliczony automatycznie`;
+      if (content) {
+        result += ` i otrzymasz powiadomienie webhook (jeśli skonfigurowane)`;
+      }
+      result += `.`;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+
+    } catch (error) {
+      console.error("Błąd podczas aktualizacji Content Editora:", error);
       return {
         content: [
           {
