@@ -19,6 +19,9 @@ const SCOPES = [
 // Resolve paths relative to the project root
 const PROJECT_ROOT = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), '..'));
 
+// Dodaj po definicji TOKEN_PATH
+const SURFER_API_KEY = path.join(PROJECT_ROOT, "surfer-config.json");
+
 // The token path is where we'll store the OAuth credentials
 const TOKEN_PATH = path.join(PROJECT_ROOT, "token.json");
 
@@ -212,6 +215,80 @@ server.resource(
 );
 
 // TOOLS
+
+// Tool do pobierania słów kluczowych z Surfer SEO
+server.tool(
+  "get-surfer-keywords",
+  {
+    contentEditorId: z.number().describe("ID of the Surfer SEO Content Editor"),
+  },
+  async ({ contentEditorId }) => {
+    try {
+      // Wywołanie API Surfer SEO
+      const response = await fetch(`https://app.surferseo.com/api/v1/content_editors/${contentEditorId}/terms`, {
+        headers: {
+          "API-KEY": SURFER_API_KEY,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        }
+      });
+
+      // Sprawdź czy request się udał
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+      }
+
+      const data = await response.json() as any;
+
+      // Wyciągnij słowa kluczowe zgodnie z logiką z przykładu
+      const includedTerms = [];
+      const headingTerms = [];
+
+      for (const term of data.terms) {
+        if (term.included === true) {
+          includedTerms.push(term.term);
+        }
+        if (term.use_in_heading === true) {
+          headingTerms.push(term.term);
+        }
+      }
+
+      // Przygotuj czytelną odpowiedź
+      let result = `Słowa kluczowe z Surfer SEO (Content Editor: ${contentEditorId})\n\n`;
+      
+      result += `📍 Słowa do włączenia (${includedTerms.length}):\n`;
+      includedTerms.forEach(term => {
+        result += `• ${term}\n`;
+      });
+      
+      result += `\n📋 Słowa do nagłówków (${headingTerms.length}):\n`;
+      headingTerms.forEach(term => {
+        result += `• ${term}\n`;
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+
+    } catch (error) {
+      console.error("Błąd podczas pobierania słów kluczowych:", error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Błąd: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
 
 // Tool to create a new document
 server.tool(

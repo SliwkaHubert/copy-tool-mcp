@@ -8,6 +8,7 @@ build/
 credentials.json
 token.json
 claude_desktop_config.json
+surfer-config.json
 
 # Environment variables
 .env
