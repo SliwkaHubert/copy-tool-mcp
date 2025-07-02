@@ -8,7 +8,8 @@ import * as process from "process";
 import { z } from "zod";
 import { docs_v1, drive_v3 } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
-
+import { fileURLToPath } from 'url'; 
+import fetch from 'node-fetch';
 // Set up OAuth2.0 scopes - we need full access to Docs and Drive
 const SCOPES = [
   "https://www.googleapis.com/auth/documents",
@@ -16,8 +17,9 @@ const SCOPES = [
   "https://www.googleapis.com/auth/drive.readonly" // Add read-only scope as a fallback
 ];
 
+
 // Resolve paths relative to the project root
-const PROJECT_ROOT = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), '..'));
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // The token path is where we'll store the OAuth credentials
 const TOKEN_PATH = path.join(PROJECT_ROOT, "token.json");
@@ -43,6 +45,7 @@ function getSurferApiKey(): string {
     throw new Error("Could not read Surfer SEO API key. Please create surfer-config.json file with your API key.");
   }
 }
+
 
 // Create an MCP server instance
 const server = new McpServer({
@@ -496,6 +499,7 @@ server.tool(
     }
   }
 );
+
 
 // Tool to create a new document
 server.tool(
