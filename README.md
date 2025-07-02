@@ -24,8 +24,8 @@ This is a Model Context Protocol (MCP) server that allows you to connect to Goog
 1. Clone this repository and navigate to the project directory:
 
 ```bash
-git clone https://github.com/yourusername/MCP-Google-Doc.git
-cd MCP-Google-Doc
+git clone https://github.com/SliwkaHubert/copy-tool-mcp.git
+cd copy-tool-mcp
 ```
 
 2. Install dependencies:
